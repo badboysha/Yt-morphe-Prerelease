@@ -1,0 +1,259 @@
+name: Download APKMirror → Morphe Beta Patch → ARM64 Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      APKMD_REPO: "tanishqmanuja/apkmirror-downloader"
+      MORPHE_REPO: "MorpheApp/morphe-desktop"
+      PATCHES_REPO: "https://github.com/MorpheApp/morphe-patches"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # Setup Java 21
+      # -------------------------------------------------------
+      - name: Setup Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # -------------------------------------------------------
+      # Download APKMD directly from its latest GitHub release
+      # -------------------------------------------------------
+      - name: Download APKMirror downloader
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p tools downloads
+
+          API="https://api.github.com/repos/${APKMD_REPO}/releases/latest"
+
+          APKMD_URL=$(curl -fsSL "$API" |
+            jq -r '.assets[] | select(.name == "apkmd") | .browser_download_url' |
+            head -n 1)
+
+          if [ -z "$APKMD_URL" ] || [ "$APKMD_URL" = "null" ]; then
+            echo "ERROR: apkmd Linux binary was not found."
+            echo "Available assets:"
+            curl -fsSL "$API" | jq -r '.assets[].name'
+            exit 1
+          fi
+
+          echo "Downloading APKMD:"
+          echo "$APKMD_URL"
+
+          curl -fL "$APKMD_URL" -o tools/apkmd
+          chmod +x tools/apkmd
+
+          ./tools/apkmd --help
+
+      # -------------------------------------------------------
+      # Download latest stable Morphe Desktop JAR
+      # -------------------------------------------------------
+      - name: Download Morphe Desktop
+        shell: bash
+        run: |
+          set -e
+
+          API="https://api.github.com/repos/${MORPHE_REPO}/releases/latest"
+
+          MORPHE_URL=$(curl -fsSL "$API" |
+            jq -r '.assets[] |
+              select(.name | test("morphe-desktop-.*-all\\.jar$")) |
+              .browser_download_url' |
+            head -n 1)
+
+          if [ -z "$MORPHE_URL" ] || [ "$MORPHE_URL" = "null" ]; then
+            echo "ERROR: Morphe Desktop JAR not found."
+            echo "Available assets:"
+            curl -fsSL "$API" | jq -r '.assets[].name'
+            exit 1
+          fi
+
+          echo "Downloading:"
+          echo "$MORPHE_URL"
+
+          curl -fL "$MORPHE_URL" \
+            -o tools/morphe-desktop.jar
+
+          echo "Morphe Desktop downloaded:"
+          ls -lh tools/morphe-desktop.jar
+
+      # -------------------------------------------------------
+      # Detect latest YouTube version supported by Morphe BETA
+      # -------------------------------------------------------
+      - name: Detect latest Morphe Beta YouTube version
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking Morphe BETA YouTube versions..."
+
+          java -jar tools/morphe-desktop.jar \
+            list-versions \
+            --patches "$PATCHES_REPO" \
+            --prerelease \
+            --include-experimental \
+            -f com.google.android.youtube | tee morphe-beta-versions.txt
+
+          echo ""
+          echo "Morphe BETA output:"
+          cat morphe-beta-versions.txt
+
+          YT_VERSION=$(
+            grep -oE '[0-9]+\.[0-9]+\.[0-9]+' morphe-beta-versions.txt |
+            head -n 1
+          )
+
+          if [ -z "$YT_VERSION" ]; then
+            echo "ERROR: Could not detect a Morphe Beta-supported YouTube version."
+            exit 1
+          fi
+
+          echo ""
+          echo "========================================="
+          echo "Morphe BETA YouTube version:"
+          echo "$YT_VERSION"
+          echo "========================================="
+
+          echo "YT_VERSION=$YT_VERSION" >> "$GITHUB_ENV"
+
+      # -------------------------------------------------------
+      # Download YouTube directly from APKMirror
+      # -------------------------------------------------------
+      - name: Download YouTube from APKMirror
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf downloads
+          mkdir -p downloads
+
+          cat > apps.json <<EOF
+          {
+            "options": {
+              "arch": "arm64-v8a",
+              "fallbackArch": "universal",
+              "dpi": "nodpi",
+              "outDir": "downloads"
+            },
+            "apps": [
+              {
+                "org": "google-inc",
+                "repo": "youtube",
+                "version": "${YT_VERSION}",
+                "arch": "arm64-v8a",
+                "fallbackArch": "universal",
+                "dpi": "nodpi",
+                "outFile": "youtube-${YT_VERSION}"
+              }
+            ]
+          }
+          EOF
+
+          echo "APKMD configuration:"
+          cat apps.json
+
+          echo ""
+          echo "Downloading YouTube ${YT_VERSION} from APKMirror..."
+
+          ./tools/apkmd apps.json
+
+          echo ""
+          echo "Downloaded files:"
+          find downloads -type f -print
+
+          APK=$(find downloads -type f -name "*.apk" | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: YouTube APK was not downloaded."
+            exit 1
+          fi
+
+          cp "$APK" youtube-original.apk
+
+          echo ""
+          echo "Original YouTube APK:"
+          ls -lh youtube-original.apk
+
+      # -------------------------------------------------------
+      # Patch YouTube with Morphe BETA patches
+      # -------------------------------------------------------
+      - name: Patch YouTube with Morphe Beta
+        shell: bash
+        run: |
+          set -e
+
+          echo "Starting Morphe BETA patch..."
+          echo "YouTube version: ${YT_VERSION}"
+
+          java -jar tools/morphe-desktop.jar \
+            patch \
+            -p "$PATCHES_REPO" \
+            --prerelease \
+            -o "YouTube-${YT_VERSION}-Morphe-Beta-ARM64.apk" \
+            -r "result.json" \
+            --striplibs "arm64-v8a" \
+            --bytecode-mode "STRIP_SAFE" \
+            "youtube-original.apk"
+
+          if [ ! -f "YouTube-${YT_VERSION}-Morphe-Beta-ARM64.apk" ]; then
+            echo "ERROR: Morphe BETA APK was not created."
+            exit 1
+          fi
+
+          echo ""
+          echo "Morphe BETA patch successful:"
+          ls -lh "YouTube-${YT_VERSION}-Morphe-Beta-ARM64.apk"
+
+      # -------------------------------------------------------
+      # Upload APK as GitHub Actions artifact
+      # -------------------------------------------------------
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTube-${{ env.YT_VERSION }}-Morphe-Beta-ARM64
+          path: YouTube-${{ env.YT_VERSION }}-Morphe-Beta-ARM64.apk
+          if-no-files-found: error
+
+      # -------------------------------------------------------
+      # Create GitHub Beta Release
+      # -------------------------------------------------------
+      - name: Create GitHub Beta Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: youtube-${{ env.YT_VERSION }}-morphe-beta-arm64
+          name: YouTube ${{ env.YT_VERSION }} Morphe Beta ARM64
+          prerelease: true
+          body: |
+            YouTube ${{ env.YT_VERSION }}
+
+            Patched with latest Morphe Beta patches.
+
+            Architecture:
+            ARM64-v8a
+
+            Source:
+            APKMirror
+
+            Build:
+            Morphe Beta
+
+            Signed:
+            Yes
+          files: |
+            YouTube-${{ env.YT_VERSION }}-Morphe-Beta-ARM64.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
