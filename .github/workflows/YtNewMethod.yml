@@ -75,15 +75,20 @@ jobs:
 
           if [ -z "$APKMD_URL" ] || [ "$APKMD_URL" = "null" ]; then
             echo "ERROR: APKMD binary not found."
+
             echo "Available assets:"
-            curl -fsSL "$API" | jq -r '.assets[].name'
+            curl -fsSL "$API" |
+              jq -r '.assets[].name'
+
             exit 1
           fi
 
           echo "Downloading APKMD:"
           echo "$APKMD_URL"
 
-          curl -fL "$APKMD_URL" -o tools/apkmd
+          curl -fL "$APKMD_URL" \
+            -o tools/apkmd
+
           chmod +x tools/apkmd
 
           echo "APKMD:"
@@ -127,46 +132,6 @@ jobs:
           ls -lh tools/morphe-desktop.jar
 
       # -------------------------------------------------------
-      # Detect Morphe Patch Version
-      # -------------------------------------------------------
-      - name: Detect Morphe Patch Version
-        shell: bash
-        run: |
-          set -e
-
-          echo "Detecting latest Morphe pre-release patch version..."
-
-          PATCH_API="https://api.github.com/repos/MorpheApp/morphe-patches/releases"
-
-          PATCH_VERSION="$(
-            curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              "$PATCH_API?per_page=30" |
-            jq -r '
-              .[]
-              | select(.prerelease == true)
-              | .tag_name
-            ' |
-            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$' |
-            head -n 1
-          )"
-
-          if [ -z "$PATCH_VERSION" ]; then
-            echo "ERROR: Could not detect Morphe patch version."
-            exit 1
-          fi
-
-          PATCH_VERSION="${PATCH_VERSION#v}"
-
-          echo ""
-          echo "========================================="
-          echo "Morphe Patch Version:"
-          echo "$PATCH_VERSION"
-          echo "========================================="
-
-          echo "PATCH_VERSION=$PATCH_VERSION" >> "$GITHUB_ENV"
-
-      # -------------------------------------------------------
       # Select YouTube version
       # -------------------------------------------------------
       - name: Select YouTube version
@@ -193,14 +158,17 @@ jobs:
             echo "$YT_VERSION"
             echo "========================================="
 
+            echo "YT_VERSION=$YT_VERSION" >> "$GITHUB_ENV"
+
           else
 
             # -------------------------------------------------
-            # Automatically detect latest compatible version
+            # Automatically detect latest Beta-compatible
+            # YouTube version from Morphe
             # -------------------------------------------------
 
             echo ""
-            echo "Detecting Morphe YouTube versions..."
+            echo "Detecting Morphe Beta YouTube versions..."
 
             if [ "$INCLUDE_EXPERIMENTAL" = "true" ]; then
 
@@ -224,7 +192,7 @@ jobs:
             fi
 
             echo ""
-            echo "Morphe output:"
+            echo "Morphe Beta output:"
             cat morphe-versions.txt
 
             YT_VERSION="$(
@@ -243,14 +211,40 @@ jobs:
             echo "$YT_VERSION"
             echo "========================================="
 
+            echo "YT_VERSION=$YT_VERSION" >> "$GITHUB_ENV"
+
           fi
 
-          echo "YT_VERSION=$YT_VERSION" >> "$GITHUB_ENV"
+      # -------------------------------------------------------
+      # Detect Morphe Patch Version
+      # -------------------------------------------------------
+      - name: Detect Morphe Patch Version
+        shell: bash
+        run: |
+          set -e
+
+          PATCH_VERSION="$(
+            curl -fsSL \
+              "https://api.github.com/repos/MorpheApp/morphe-patches/releases/latest" |
+            jq -r '.tag_name'
+          )"
+
+          if [ -z "$PATCH_VERSION" ] || [ "$PATCH_VERSION" = "null" ]; then
+            echo "ERROR: Could not detect Morphe patch version."
+            exit 1
+          fi
+
+          PATCH_VERSION="${PATCH_VERSION#v}"
+
+          echo "Detected Morphe patch version:"
+          echo "$PATCH_VERSION"
+
+          echo "PATCH_VERSION=$PATCH_VERSION" >> "$GITHUB_ENV"
 
       # -------------------------------------------------------
-      # Confirm versions
+      # Confirm selected version
       # -------------------------------------------------------
-      - name: Confirm Build Versions
+      - name: Confirm YouTube version
         shell: bash
         run: |
           set -e
@@ -260,19 +254,11 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$PATCH_VERSION" ]; then
-            echo "ERROR: PATCH_VERSION is empty."
-            exit 1
-          fi
+          echo "YouTube version selected:"
+          echo "$YT_VERSION"
 
-          echo ""
-          echo "========================================="
-          echo "Build information"
-          echo "========================================="
-          echo "YouTube Version : $YT_VERSION"
-          echo "Morphe Patches  : $PATCH_VERSION"
-          echo "Architecture    : ARM64-v8a"
-          echo "========================================="
+          echo "Morphe patch version:"
+          echo "$PATCH_VERSION"
 
       # -------------------------------------------------------
       # Download YouTube from APKMirror
@@ -382,23 +368,7 @@ jobs:
           ls -lh youtube-aligned.apk
 
       # -------------------------------------------------------
-      # Prepare final APK name
-      # -------------------------------------------------------
-      - name: Prepare APK filename
-        shell: bash
-        run: |
-          set -e
-
-          FINAL_APK="YT-${YT_VERSION}-Morphe-Beta-Patches-${PATCH_VERSION}-ARM64.apk"
-
-          echo "FINAL_APK=$FINAL_APK" >> "$GITHUB_ENV"
-
-          echo ""
-          echo "Final APK filename:"
-          echo "$FINAL_APK"
-
-      # -------------------------------------------------------
-      # Patch with Morphe Beta
+      # Patch with Morphe Beta patches
       # -------------------------------------------------------
       - name: Patch YouTube with Morphe Beta
         shell: bash
@@ -407,10 +377,11 @@ jobs:
 
           echo "========================================="
           echo "Starting Morphe Beta patch"
+          echo "YouTube: ${YT_VERSION}"
+          echo "Patches: ${PATCH_VERSION}"
           echo "========================================="
-          echo "YouTube : ${YT_VERSION}"
-          echo "Patches : ${PATCH_VERSION}"
-          echo "========================================="
+
+          FINAL_APK="YT-${YT_VERSION}-Morphe-Beta-Patches-${PATCH_VERSION}.apk"
 
           java -jar tools/morphe-desktop.jar \
             patch \
@@ -427,6 +398,8 @@ jobs:
             exit 1
           fi
 
+          echo "FINAL_APK=$FINAL_APK" >> "$GITHUB_ENV"
+
           echo ""
           echo "========================================="
           echo "Morphe Beta patch successful"
@@ -442,17 +415,19 @@ jobs:
         run: |
           set -e
 
-          if [ ! -f "$FINAL_APK" ]; then
+          APK="$FINAL_APK"
+
+          if [ ! -f "$APK" ]; then
             echo "ERROR: Final APK not found."
             exit 1
           fi
 
           echo "Final APK:"
-          ls -lh "$FINAL_APK"
+          ls -lh "$APK"
 
           echo ""
           echo "APK information:"
-          file "$FINAL_APK"
+          file "$APK"
 
       # -------------------------------------------------------
       # Upload APK artifact
@@ -460,7 +435,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YT-${{ env.YT_VERSION }}-Morphe-Beta-Patches-${{ env.PATCH_VERSION }}-ARM64
+          name: YT-${{ env.YT_VERSION }}-Morphe-Beta-Patches-${{ env.PATCH_VERSION }}
           path: ${{ env.FINAL_APK }}
           if-no-files-found: error
 
@@ -471,47 +446,42 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Morphe-result-${{ env.YT_VERSION }}-${{ env.PATCH_VERSION }}
+          name: Morphe-result-${{ env.YT_VERSION }}
           path: result.json
           if-no-files-found: warn
 
       # -------------------------------------------------------
-      # Create separate GitHub Beta Release
+      # Create GitHub Beta Release
       # -------------------------------------------------------
       - name: Create GitHub Beta Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: yt-${{ env.YT_VERSION }}-morphe-beta-patches-${{ env.PATCH_VERSION }}
-          name: YT ${{ env.YT_VERSION }} • Morphe Beta • Patches ${{ env.PATCH_VERSION }}
-
+          tag_name: yt-${{ env.YT_VERSION }}-morphe-beta-${{ env.PATCH_VERSION }}
+          name: YT ${{ env.YT_VERSION }} Morphe Beta - Patches ${{ env.PATCH_VERSION }}
           prerelease: true
 
-          generate_release_notes: false
-
           body: |
-            ## YouTube ${{ env.YT_VERSION }}
+            YouTube ${{ env.YT_VERSION }}
 
-            **Morphe Beta patched YouTube build**
+            Patched with Morphe Beta patches.
 
-            ### Build Information
+            Morphe Patches:
+            ${{ env.PATCH_VERSION }}
 
-            | Item | Details |
-            |---|---|
-            | YouTube | `${{ env.YT_VERSION }}` |
-            | Morphe Patches | `${{ env.PATCH_VERSION }}` |
-            | Architecture | `ARM64-v8a` |
-            | Optimized | Yes |
-            | Zipaligned | Yes |
-            | Channel | Beta / Experimental |
-            | Source | APKMirror |
+            Architecture:
+            ARM64-v8a
 
-            ### APK
+            Optimized:
+            Yes
 
-            `${{ env.FINAL_APK }}`
+            Zipaligned:
+            Yes
 
-            ### Patches
+            Source:
+            APKMirror
 
-            This APK was patched using the Morphe pre-release patch channel.
+            Build:
+            Morphe Beta
 
           files: |
             ${{ env.FINAL_APK }}
