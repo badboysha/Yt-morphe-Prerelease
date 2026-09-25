@@ -1,4 +1,4 @@
-name: Experimental → Morphe Beta Patch → ARM64 Release
+name: Morphe Beta Patch → ARM64 Release
 
 on:
   workflow_dispatch:
