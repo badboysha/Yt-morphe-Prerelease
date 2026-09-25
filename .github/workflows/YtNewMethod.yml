@@ -1,4 +1,4 @@
-name: Morphe Beta Patch → ARM64 Release
+name: Experimental → Morphe Beta Patch → ARM64 Release
 
 on:
   workflow_dispatch:
@@ -216,28 +216,42 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # Detect Morphe Patch Version
+      # Detect Latest Morphe DEV Patch Version
       # -------------------------------------------------------
       - name: Detect Morphe Patch Version
         shell: bash
         run: |
           set -e
 
+          echo "Detecting latest Morphe DEV patch..."
+
           PATCH_VERSION="$(
             curl -fsSL \
-              "https://api.github.com/repos/MorpheApp/morphe-patches/releases/latest" |
-            jq -r '.tag_name'
+              "https://api.github.com/repos/MorpheApp/morphe-patches/releases?per_page=30" |
+            jq -r '
+              [
+                .[]
+                | select(.prerelease == true)
+                | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]+$"))
+              ]
+              | sort_by(.published_at)
+              | last
+              | .tag_name
+            '
           )"
 
           if [ -z "$PATCH_VERSION" ] || [ "$PATCH_VERSION" = "null" ]; then
-            echo "ERROR: Could not detect Morphe patch version."
+            echo "ERROR: Could not detect latest Morphe DEV patch."
             exit 1
           fi
 
           PATCH_VERSION="${PATCH_VERSION#v}"
 
-          echo "Detected Morphe patch version:"
+          echo ""
+          echo "========================================="
+          echo "Latest Morphe DEV Patch:"
           echo "$PATCH_VERSION"
+          echo "========================================="
 
           echo "PATCH_VERSION=$PATCH_VERSION" >> "$GITHUB_ENV"
 
@@ -257,7 +271,7 @@ jobs:
           echo "YouTube version selected:"
           echo "$YT_VERSION"
 
-          echo "Morphe patch version:"
+          echo "Morphe DEV patch version:"
           echo "$PATCH_VERSION"
 
       # -------------------------------------------------------
@@ -458,14 +472,16 @@ jobs:
         with:
           tag_name: yt-${{ env.YT_VERSION }}-morphe-beta-${{ env.PATCH_VERSION }}
           name: YT ${{ env.YT_VERSION }} Morphe Beta - Patches ${{ env.PATCH_VERSION }}
-          prerelease: true
+
+          # NORMAL RELEASE — NOT PRE-RELEASE
+          prerelease: false
 
           body: |
             YouTube ${{ env.YT_VERSION }}
 
             Patched with Morphe Beta patches.
 
-            Morphe Patches:
+            Morphe DEV Patches:
             ${{ env.PATCH_VERSION }}
 
             Architecture:
