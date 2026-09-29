@@ -79,7 +79,6 @@ jobs:
           fi
 
           echo "Keystore restored successfully."
-          ls -lh signing/yt-morphe-release.jks
 
       # -------------------------------------------------------
       # Verify signing keystore
@@ -396,6 +395,7 @@ jobs:
 
       # -------------------------------------------------------
       # Patch with Morphe Beta patches
+      # Failed patches are skipped
       # -------------------------------------------------------
       - name: Patch YouTube with Morphe Beta
         shell: bash
@@ -406,6 +406,7 @@ jobs:
           echo "Starting Morphe Beta patch"
           echo "YouTube: ${YT_VERSION}"
           echo "Patches: ${PATCH_VERSION}"
+          echo "Failed patches: CONTINUE"
           echo "========================================="
 
           FINAL_APK="YT-${YT_VERSION}-Morphe-Beta-Patches-${PATCH_VERSION}.apk"
@@ -414,6 +415,7 @@ jobs:
             patch \
             -p "$PATCHES_REPO" \
             --prerelease \
+            --continue-on-error \
             -o "$FINAL_APK" \
             -r "result.json" \
             --striplibs "arm64-v8a" \
@@ -429,72 +431,115 @@ jobs:
 
           echo ""
           echo "========================================="
-          echo "Morphe Beta patch successful"
+          echo "Morphe Beta patch completed"
+          echo "Failed patches were allowed to continue"
           echo "========================================="
 
           ls -lh "$FINAL_APK"
 
       # -------------------------------------------------------
-      # Optimize APK size
+      # Show patch results
       # -------------------------------------------------------
-      - name: Optimize APK size
+      - name: Show Morphe patch results
+        if: always()
+        shell: bash
+        run: |
+          echo "========================================="
+          echo "Morphe patch result"
+          echo "========================================="
+
+          if [ -f "result.json" ]; then
+            cat result.json
+          else
+            echo "result.json not found."
+          fi
+
+      # -------------------------------------------------------
+      # Keep English resources only
+      # -------------------------------------------------------
+      - name: Keep English resources only
         shell: bash
         run: |
           set -e
 
           APK="$FINAL_APK"
-          TEMP_APK="${APK%.apk}-optimized.apk"
-          TEMP_DIR="apk-opt"
+          OPTIMIZED_APK="${APK%.apk}-english.apk"
 
-          BEFORE_SIZE=$(stat -c%s "$APK")
+          AAPT2="$(
+            find "$ANDROID_HOME/build-tools" \
+              -type f \
+              -name "aapt2" |
+            sort -V |
+            tail -n 1
+          )"
 
-          echo "========================================="
-          echo "APK size before optimization"
-          echo "========================================="
-          ls -lh "$APK"
-
-          rm -rf "$TEMP_DIR"
-          mkdir -p "$TEMP_DIR"
-
-          unzip -q "$APK" -d "$TEMP_DIR"
-
-          cd "$TEMP_DIR"
-
-          # Maximum ZIP compression for APK contents.
-          # Native libraries are kept uncompressed.
-          zip -9 -q -r \
-            "../$TEMP_APK" \
-            . \
-            -x "lib/*/*.so"
-
-          if find lib -type f -name "*.so" | grep -q .; then
-            find lib -type f -name "*.so" -print0 |
-              xargs -0 zip -0 -q "../$TEMP_APK"
-          fi
-
-          cd ..
-
-          if [ ! -s "$TEMP_APK" ]; then
-            echo "ERROR: Optimized APK was not created."
+          if [ -z "$AAPT2" ]; then
+            echo "ERROR: aapt2 not found."
             exit 1
           fi
 
-          mv "$TEMP_APK" "$APK"
-
-          AFTER_SIZE=$(stat -c%s "$APK")
+          echo "Using AAPT2:"
+          echo "$AAPT2"
 
           echo ""
-          echo "========================================="
-          echo "APK size after optimization"
-          echo "========================================="
+          echo "APK size before language filtering:"
           ls -lh "$APK"
 
-          BEFORE_MB=$(awk "BEGIN {printf \"%.2f\", $BEFORE_SIZE/1048576}")
-          AFTER_MB=$(awk "BEGIN {printf \"%.2f\", $AFTER_SIZE/1048576}")
+          "$AAPT2" optimize \
+            -c en \
+            -o "$OPTIMIZED_APK" \
+            "$APK"
+
+          if [ ! -s "$OPTIMIZED_APK" ]; then
+            echo "ERROR: English-only APK was not created."
+            exit 1
+          fi
+
+          mv "$OPTIMIZED_APK" "$APK"
 
           echo ""
-          echo "Before: ${BEFORE_MB} MB"
-          echo "After:  ${AFTER_MB} MB"
+          echo "APK size after English-only filtering:"
+          ls -lh "$APK"
+
+      # -------------------------------------------------------
+      # AAPT2 sparse resource optimization
+      # -------------------------------------------------------
+      - name: Optimize APK resources
+        shell: bash
+        run: |
+          set -e
+
+          APK="$FINAL_APK"
+          OPTIMIZED_APK="${APK%.apk}-optimized.apk"
+
+          AAPT2="$(
+            find "$ANDROID_HOME/build-tools" \
+              -type f \
+              -name "aapt2" |
+            sort -V |
+            tail -n 1
+          )"
+
+          if [ -z "$AAPT2" ]; then
+            echo "ERROR: aapt2 not found."
+            exit 1
+          fi
+
+          "$AAPT2" optimize \
+            --enable-sparse-encoding \
+            -o "$OPTIMIZED_APK" \
+            "$APK"
+
+          if [ ! -s "$OPTIMIZED_APK" ]; then
+            echo "ERROR: AAPT2 optimization failed."
+            exit 1
+          fi
+
+          mv "$OPTIMIZED_APK" "$APK"
+
+          echo ""
+          echo "Optimized APK:"
+          ls -lh "$APK"
 
       # -------------------------------------------------------
       # Zipalign final APK
@@ -545,7 +590,7 @@ jobs:
           echo "Zipalign successful."
 
       # -------------------------------------------------------
-      # Sign final APK with YT Morphe keystore
+      # Sign final APK
       # -------------------------------------------------------
       - name: Sign final APK
         shell: bash
@@ -694,14 +739,20 @@ jobs:
             Architecture:
             ARM64-v8a
 
+            Languages:
+            English only
+
+            Optimization:
+            AAPT2 resource filtering + sparse encoding + Zipalign
+
             Signing:
             YT Morphe release keystore
 
-            Optimization:
-            Compressed + Zipaligned
-
             Signature:
             Verified
+
+            Failed patches:
+            Skipped when possible
 
             Build:
             Morphe Beta
