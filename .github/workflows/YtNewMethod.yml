@@ -53,10 +53,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-          cache: gradle
 
       # -------------------------------------------------------
-      # Restore signing keystore from GitHub Secrets
+      # Restore YT Morphe signing keystore from Secrets
       # -------------------------------------------------------
       - name: Restore YT Morphe signing keystore
         shell: bash
@@ -80,11 +79,10 @@ jobs:
           fi
 
           echo "Keystore restored successfully."
-
           ls -lh signing/yt-morphe-release.jks
 
       # -------------------------------------------------------
-      # Verify keystore
+      # Verify signing keystore
       # -------------------------------------------------------
       - name: Verify signing keystore
         shell: bash
@@ -95,12 +93,12 @@ jobs:
           set -e
 
           if [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "ERROR: Keystore password secret is empty."
+            echo "ERROR: YT_MORPHE_KEYSTORE_PASSWORD secret is empty."
             exit 1
           fi
 
           if [ -z "$KEY_ALIAS" ]; then
-            echo "ERROR: Key alias secret is empty."
+            echo "ERROR: YT_MORPHE_KEY_ALIAS secret is empty."
             exit 1
           fi
 
@@ -126,11 +124,9 @@ jobs:
 
           APKMD_URL="$(
             curl -fsSL "$API" |
-            jq -r '
-              .assets[]
+            jq -r '.assets[]
               | select(.name == "apkmd")
-              | .browser_download_url
-            ' |
+              | .browser_download_url' |
             head -n 1
           )"
 
@@ -152,6 +148,7 @@ jobs:
 
           chmod +x tools/apkmd
 
+          echo "APKMD:"
           ./tools/apkmd --help
 
       # -------------------------------------------------------
@@ -166,11 +163,9 @@ jobs:
 
           MORPHE_URL="$(
             curl -fsSL "$API" |
-            jq -r '
-              .assets[]
+            jq -r '.assets[]
               | select(.name | test("morphe-desktop-.*-all\\.jar$"))
-              | .browser_download_url
-            ' |
+              | .browser_download_url' |
             head -n 1
           )"
 
@@ -190,6 +185,7 @@ jobs:
           curl -fL "$MORPHE_URL" \
             -o tools/morphe-desktop.jar
 
+          echo "Morphe Desktop:"
           ls -lh tools/morphe-desktop.jar
 
       # -------------------------------------------------------
@@ -206,17 +202,29 @@ jobs:
           echo "Selected option: $SELECTED_VERSION"
           echo "Include experimental: $INCLUDE_EXPERIMENTAL"
 
+          # ---------------------------------------------------
+          # Manual version
+          # ---------------------------------------------------
           if [ "$SELECTED_VERSION" != "latest" ]; then
 
             YT_VERSION="$SELECTED_VERSION"
 
+            echo ""
+            echo "========================================="
             echo "Manual YouTube version:"
             echo "$YT_VERSION"
+            echo "========================================="
 
             echo "YT_VERSION=$YT_VERSION" >> "$GITHUB_ENV"
 
           else
 
+            # -------------------------------------------------
+            # Automatically detect latest Beta-compatible
+            # YouTube version from Morphe
+            # -------------------------------------------------
+
+            echo ""
             echo "Detecting Morphe Beta YouTube versions..."
 
             if [ "$INCLUDE_EXPERIMENTAL" = "true" ]; then
@@ -241,7 +249,7 @@ jobs:
             fi
 
             echo ""
-            echo "Morphe Beta versions:"
+            echo "Morphe Beta output:"
             cat morphe-versions.txt
 
             YT_VERSION="$(
@@ -255,15 +263,17 @@ jobs:
             fi
 
             echo ""
+            echo "========================================="
             echo "Automatically selected:"
             echo "$YT_VERSION"
+            echo "========================================="
 
             echo "YT_VERSION=$YT_VERSION" >> "$GITHUB_ENV"
 
           fi
 
       # -------------------------------------------------------
-      # Detect latest Morphe DEV patch
+      # Detect Latest Morphe DEV Patch Version
       # -------------------------------------------------------
       - name: Detect Morphe Patch Version
         shell: bash
@@ -279,10 +289,7 @@ jobs:
               [
                 .[]
                 | select(.prerelease == true)
-                | select(
-                    .tag_name
-                    | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]+$")
-                  )
+                | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]+$"))
               ]
               | sort_by(.published_at)
               | last
@@ -298,15 +305,17 @@ jobs:
           PATCH_VERSION="${PATCH_VERSION#v}"
 
           echo ""
-          echo "Latest Morphe DEV patch:"
+          echo "========================================="
+          echo "Latest Morphe DEV Patch:"
           echo "$PATCH_VERSION"
+          echo "========================================="
 
           echo "PATCH_VERSION=$PATCH_VERSION" >> "$GITHUB_ENV"
 
       # -------------------------------------------------------
-      # Confirm versions
+      # Confirm selected version
       # -------------------------------------------------------
-      - name: Confirm selected versions
+      - name: Confirm YouTube version
         shell: bash
         run: |
           set -e
@@ -316,13 +325,11 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$PATCH_VERSION" ]; then
-            echo "ERROR: PATCH_VERSION is empty."
-            exit 1
-          fi
+          echo "YouTube version selected:"
+          echo "$YT_VERSION"
 
-          echo "YouTube version: $YT_VERSION"
-          echo "Morphe patch:    $PATCH_VERSION"
+          echo "Morphe DEV patch version:"
+          echo "$PATCH_VERSION"
 
       # -------------------------------------------------------
       # Download YouTube from APKMirror
@@ -365,6 +372,10 @@ jobs:
 
           ./tools/apkmd apps.json
 
+          echo ""
+          echo "Downloaded files:"
+          find downloads -type f -print
+
           APK="$(
             find downloads \
               -type f \
@@ -384,20 +395,20 @@ jobs:
           ls -lh youtube-original.apk
 
       # -------------------------------------------------------
-      # Patch with Morphe Beta
+      # Patch with Morphe Beta patches
       # -------------------------------------------------------
       - name: Patch YouTube with Morphe Beta
         shell: bash
         run: |
           set -e
 
-          FINAL_APK="YT-${YT_VERSION}-Morphe-Beta-Patches-${PATCH_VERSION}.apk"
-
           echo "========================================="
           echo "Starting Morphe Beta patch"
           echo "YouTube: ${YT_VERSION}"
           echo "Patches: ${PATCH_VERSION}"
           echo "========================================="
+
+          FINAL_APK="YT-${YT_VERSION}-Morphe-Beta-Patches-${PATCH_VERSION}.apk"
 
           java -jar tools/morphe-desktop.jar \
             patch \
@@ -410,32 +421,37 @@ jobs:
             youtube-original.apk
 
           if [ ! -f "$FINAL_APK" ]; then
-            echo "ERROR: Morphe APK was not created."
+            echo "ERROR: Morphe Beta APK was not created."
             exit 1
           fi
 
           echo "FINAL_APK=$FINAL_APK" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Morphe patch successful:"
+          echo "========================================="
+          echo "Morphe Beta patch successful"
+          echo "========================================="
+
           ls -lh "$FINAL_APK"
 
       # -------------------------------------------------------
-      # Safe APK size optimization
+      # Optimize APK size
       # -------------------------------------------------------
-      - name: Optimize APK compression
+      - name: Optimize APK size
         shell: bash
         run: |
           set -e
 
           APK="$FINAL_APK"
-          TEMP_DIR="apk-opt"
           TEMP_APK="${APK%.apk}-optimized.apk"
+          TEMP_DIR="apk-opt"
 
           BEFORE_SIZE=$(stat -c%s "$APK")
 
-          echo "APK size before optimization:"
-          du -h "$APK"
+          echo "========================================="
+          echo "APK size before optimization"
+          echo "========================================="
+          ls -lh "$APK"
 
           rm -rf "$TEMP_DIR"
           mkdir -p "$TEMP_DIR"
@@ -444,16 +460,13 @@ jobs:
 
           cd "$TEMP_DIR"
 
-          # Compress normal APK files at maximum ZIP compression.
-          # Native ARM64 .so libraries are excluded here and
-          # re-added uncompressed for Android compatibility.
+          # Maximum ZIP compression for APK contents.
+          # Native libraries are kept uncompressed.
           zip -9 -q -r \
             "../$TEMP_APK" \
             . \
-            -x "lib/*/*.so" \
-            -x "lib/*/*/*.so"
+            -x "lib/*/*.so"
 
-          # Re-add native libraries without compression.
           if find lib -type f -name "*.so" | grep -q .; then
             find lib -type f -name "*.so" -print0 |
               xargs -0 zip -0 -q "../$TEMP_APK"
@@ -471,15 +484,15 @@ jobs:
           AFTER_SIZE=$(stat -c%s "$APK")
 
           echo ""
-          echo "APK size after optimization:"
-          du -h "$APK"
-
-          echo ""
-          echo "Size comparison:"
+          echo "========================================="
+          echo "APK size after optimization"
+          echo "========================================="
+          ls -lh "$APK"
 
           BEFORE_MB=$(awk "BEGIN {printf \"%.2f\", $BEFORE_SIZE/1048576}")
           AFTER_MB=$(awk "BEGIN {printf \"%.2f\", $AFTER_SIZE/1048576}")
 
+          echo ""
           echo "Before: ${BEFORE_MB} MB"
           echo "After:  ${AFTER_MB} MB"
 
@@ -506,7 +519,7 @@ jobs:
 
           ALIGNED_APK="${FINAL_APK%.apk}-aligned.apk"
 
-          echo "Using:"
+          echo "Using zipalign:"
           echo "$ZIPALIGN"
 
           "$ZIPALIGN" \
@@ -519,7 +532,7 @@ jobs:
           mv "$ALIGNED_APK" "$FINAL_APK"
 
           echo ""
-          echo "Checking APK alignment..."
+          echo "Checking alignment..."
 
           "$ZIPALIGN" \
             -c \
@@ -532,9 +545,9 @@ jobs:
           echo "Zipalign successful."
 
       # -------------------------------------------------------
-      # Sign APK with YT Morphe keystore
+      # Sign final APK with YT Morphe keystore
       # -------------------------------------------------------
-      - name: Sign APK
+      - name: Sign final APK
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.YT_MORPHE_KEYSTORE_PASSWORD }}
@@ -544,17 +557,17 @@ jobs:
           set -e
 
           if [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "ERROR: YT_MORPHE_KEYSTORE_PASSWORD is empty."
+            echo "ERROR: Keystore password secret is empty."
             exit 1
           fi
 
           if [ -z "$KEY_ALIAS" ]; then
-            echo "ERROR: YT_MORPHE_KEY_ALIAS is empty."
+            echo "ERROR: Key alias secret is empty."
             exit 1
           fi
 
           if [ -z "$KEY_PASSWORD" ]; then
-            echo "ERROR: YT_MORPHE_KEY_PASSWORD is empty."
+            echo "ERROR: Key password secret is empty."
             exit 1
           fi
 
@@ -573,8 +586,9 @@ jobs:
 
           SIGNED_APK="${FINAL_APK%.apk}-signed.apk"
 
-          echo "Signing APK..."
-          echo "Alias: $KEY_ALIAS"
+          echo "========================================="
+          echo "Signing final APK"
+          echo "========================================="
 
           "$APKSIGNER" sign \
             --ks "signing/yt-morphe-release.jks" \
@@ -591,9 +605,9 @@ jobs:
           ls -lh "$FINAL_APK"
 
       # -------------------------------------------------------
-      # Verify signature
+      # Verify final APK signature
       # -------------------------------------------------------
-      - name: Verify APK signature
+      - name: Verify final APK signature
         shell: bash
         run: |
           set -e
@@ -614,7 +628,7 @@ jobs:
 
           echo ""
           echo "========================================="
-          echo "SIGNATURE VERIFICATION SUCCESSFUL"
+          echo "APK SIGNATURE VERIFIED"
           echo "========================================="
 
       # -------------------------------------------------------
@@ -659,9 +673,9 @@ jobs:
           retention-days: 30
 
       # -------------------------------------------------------
-      # GitHub Release
+      # Create GitHub Beta Release
       # -------------------------------------------------------
-      - name: Create GitHub Release
+      - name: Create GitHub Beta Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: yt-${{ env.YT_VERSION }}-morphe-beta-${{ env.PATCH_VERSION }}
@@ -672,7 +686,9 @@ jobs:
           body: |
             YouTube ${{ env.YT_VERSION }}
 
-            Morphe Beta patches:
+            Patched with Morphe Beta patches.
+
+            Morphe DEV Patches:
             ${{ env.PATCH_VERSION }}
 
             Architecture:
@@ -682,10 +698,13 @@ jobs:
             YT Morphe release keystore
 
             Optimization:
-            ARM64-only + ZIP compression + Zipalign
+            Compressed + Zipaligned
 
             Signature:
             Verified
+
+            Build:
+            Morphe Beta
 
           files: |
             ${{ env.FINAL_APK }}
